@@ -37,8 +37,8 @@ def import_broker_module(broker_name: str) -> Any | None:
     Returns:
         The imported module or None if import fails
     """
+    module_path = f"broker.{broker_name}.api.order_api"
     try:
-        module_path = f"broker.{broker_name}.api.order_api"
         broker_module = importlib.import_module(module_path)
         return broker_module
     except ImportError as error:
@@ -175,7 +175,7 @@ def place_order_with_auth(
     # If not in analyze mode, proceed with actual order placement
     broker_module = import_broker_module(broker)
     if broker_module is None:
-        error_response = {"status": "error", "message": "Broker-specific module not found"}
+        error_response = {"status": "error", "message": f"Broker-specific module for '{broker}' not found"}
         executor.submit(async_log_order, "placeorder", original_data, error_response)
         return False, error_response, 404
 
@@ -274,8 +274,8 @@ def place_order(
     is_valid, _, error_message = validate_order_data(order_data)
     if not is_valid:
         if get_analyze_mode():
-            return False, emit_analyzer_error(original_data, error_message), 400
-        error_response = {"status": "error", "message": error_message}
+            return False, emit_analyzer_error(original_data, error_message or "Unknown validation error"), 400
+        error_response = {"status": "error", "message": error_message or "Unknown validation error"}
         executor.submit(async_log_order, "placeorder", original_data, error_response)
         return False, error_response, 400
 
@@ -287,7 +287,23 @@ def place_order(
             # Skip logging for invalid API keys to prevent database flooding
             return False, error_response, 403
 
-        return place_order_with_auth(order_data, AUTH_TOKEN, broker_name, original_data, emit_event)
+        success, response_data, status_code = place_order_with_auth(order_data, AUTH_TOKEN, broker_name, original_data, emit_event)
+        
+        # Intercept auth failures (401/403) and auto-heal session
+        if status_code in (401, 403) or (response_data and isinstance(response_data, dict) and "TokenException" in str(response_data.get("message", ""))):
+            import os
+            if os.getenv("OPENALGO_AUTOLOGIN", "false").lower() == "true":
+                try:
+                    logger.warning(f"Auth error detected during place_order for {broker_name}. Triggering autologin sync...")
+                    from utils.autologin_manager import trigger_autologin_sync
+                    if trigger_autologin_sync():
+                        AUTH_TOKEN, broker_name = get_auth_token_broker(api_key)
+                        logger.info("Retrying order with fresh token")
+                        return place_order_with_auth(order_data, AUTH_TOKEN, broker_name, original_data, emit_event)
+                except Exception as e:
+                    logger.error(f"Autologin sync trigger failed: {e}")
+
+        return success, response_data, status_code
 
     # Case 2: Direct internal call with auth_token and broker
     elif auth_token and broker:

@@ -568,7 +568,19 @@ class BaseBrokerWebSocketAdapter(ABC):
             The result of retry_func, or None if retry also fails
         """
         try:
-            self.logger.info(f"Handling auth error for user {user_id} - fetching fresh token")
+            self.logger.info(f"Handling auth error for user {user_id} - attempting autologin recovery and fetching fresh token")
+
+            # Try to trigger auto-login to refresh the token at the source before querying DB
+            try:
+                import os
+                if os.getenv("OPENALGO_AUTOLOGIN", "false").lower() == "true":
+                    from utils.autologin_manager import trigger_autologin_sync
+                    self.logger.info("Triggering synchronous autologin to refresh token")
+                    trigger_autologin_sync()
+            except ImportError:
+                pass
+            except Exception as e:
+                self.logger.warning(f"Autologin sync trigger failed: {e}")
 
             # Clear stale cache
             self.clear_auth_cache_for_user(user_id)

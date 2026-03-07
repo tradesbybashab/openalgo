@@ -812,6 +812,16 @@ if __name__ == "__main__":
 
         start_ngrok_tunnel(port)
 
+    # Optional backend autologin (provider-based) after server boot
+    should_start_autologin = True
+    if debug:
+        should_start_autologin = os.environ.get("WERKZEUG_RUN_MAIN") == "true"
+
+    if should_start_autologin and os.getenv("OPENALGO_AUTOLOGIN", "false").lower() == "true":
+        from utils.autologin_manager import start_autologin
+
+        start_autologin()
+
     # Exclude strategies and logs directories from reloader
     reloader_options = {
         "exclude_patterns": [

@@ -148,6 +148,30 @@ def login():
     if session.get("logged_in"):
         return redirect("/dashboard")
 
+    # If autologin has already completed, auto-restore session and go to dashboard
+    if os.getenv("OPENALGO_AUTOLOGIN", "false").lower() == "true":
+        autologin_user = os.getenv("OPENALGO_USERNAME", "").strip()
+        if autologin_user:
+            from database.auth_db import Auth, get_auth_token_dbquery, decrypt_token
+            from utils.session import get_session_expiry_time, set_session_login_time
+
+            auth_obj = get_auth_token_dbquery(autologin_user)
+            if isinstance(auth_obj, Auth) and not auth_obj.is_revoked:
+                session["user"] = autologin_user
+                session["logged_in"] = True
+                session["AUTH_TOKEN"] = decrypt_token(auth_obj.auth)
+                if auth_obj.feed_token:
+                    session["FEED_TOKEN"] = decrypt_token(auth_obj.feed_token)
+                if auth_obj.user_id:
+                    session["USER_ID"] = auth_obj.user_id
+                session["user_session_key"] = autologin_user
+                session["broker"] = auth_obj.broker
+                current_app.config["PERMANENT_SESSION_LIFETIME"] = get_session_expiry_time()
+                session.permanent = True
+                set_session_login_time()
+                logger.info(f"[Autologin] Browser session auto-restored for user: {autologin_user}")
+                return redirect("/dashboard")
+
     return redirect("/login")
 
 
@@ -517,6 +541,47 @@ def debug_smtp():
 def get_session_status():
     """Return current session status for React SPA."""
     if "user" not in session:
+        # If autologin is enabled, check if the backend already has a valid token
+        # and auto-restore the browser session so the UI doesn't ask for a password.
+        if os.getenv("OPENALGO_AUTOLOGIN", "false").lower() == "true":
+            autologin_user = os.getenv("OPENALGO_USERNAME", "").strip()
+            if autologin_user:
+                from database.auth_db import Auth, get_api_key_for_tradingview, get_auth_token_dbquery
+                auth_obj = get_auth_token_dbquery(autologin_user)
+                if isinstance(auth_obj, Auth) and not auth_obj.is_revoked:
+                    from database.auth_db import decrypt_token
+                    from utils.session import get_session_expiry_time, set_session_login_time
+                    from flask import current_app
+
+                    # Populate the browser session exactly like handle_auth_success
+                    session["user"] = autologin_user
+                    session["logged_in"] = True
+                    session["AUTH_TOKEN"] = decrypt_token(auth_obj.auth)
+                    if auth_obj.feed_token:
+                        session["FEED_TOKEN"] = decrypt_token(auth_obj.feed_token)
+                    if auth_obj.user_id:
+                        session["USER_ID"] = auth_obj.user_id
+                    session["user_session_key"] = autologin_user
+                    session["broker"] = auth_obj.broker
+
+                    current_app.config["PERMANENT_SESSION_LIFETIME"] = get_session_expiry_time()
+                    session.permanent = True
+                    set_session_login_time()
+
+                    logger.info(f"[Autologin] Browser session auto-restored for user: {autologin_user}")
+
+                    api_key = get_api_key_for_tradingview(autologin_user)
+                    return jsonify(
+                        {
+                            "status": "success",
+                            "authenticated": True,
+                            "logged_in": True,
+                            "user": autologin_user,
+                            "broker": auth_obj.broker,
+                            "api_key": api_key,
+                        }
+                    )
+
         # Return 200 with authenticated: false instead of 401
         # This prevents unnecessary console errors in the browser
         return jsonify(
