@@ -488,12 +488,33 @@ class BrokerData:
                     f"({start_ts} → {end_ts})"
                 )
 
-                resp = client.get(
-                    url,
-                    params=params,
-                    headers={"Accept": "application/json"},
-                    timeout=30.0,
-                )
+                # Retry loop for transient HTTP/2 socket errors (WinError 10035, etc.)
+                last_err: Exception | None = None
+                for attempt in range(_MAX_RETRIES + 1):
+                    try:
+                        resp = client.get(
+                            url,
+                            params=params,
+                            headers={"Accept": "application/json"},
+                            timeout=30.0,
+                        )
+                        break  # success
+                    except _TRANSIENT_ERRORS as exc:
+                        last_err = exc
+                        if attempt < _MAX_RETRIES:
+                            logger.warning(
+                                f"[DeltaExchange] Transient error fetching history for {br_symbol} "
+                                f"chunk {chunk_start}→{chunk_end} (attempt {attempt + 1}/{_MAX_RETRIES + 1}): "
+                                f"{exc} – retrying"
+                            )
+                            time.sleep(_RETRY_DELAY)
+                        else:
+                            # All retries exhausted
+                            logger.error(
+                                f"[DeltaExchange] Failed to fetch history for {br_symbol} "
+                                f"chunk {chunk_start}→{chunk_end} after {_MAX_RETRIES + 1} attempts"
+                            )
+                            raise
 
                 if resp.status_code != 200:
                     raise Exception(
