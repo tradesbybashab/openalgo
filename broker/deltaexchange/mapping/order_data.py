@@ -447,6 +447,15 @@ def map_position_data(position_data):
                 net_qty = float(position.get("size", 0))
             except (ValueError, TypeError):
                 net_qty = 0
+
+            if abs(net_qty) < 1e-12:
+                logger.debug(
+                    "Skipping zero-quantity Delta position artifact: product_symbol=%s is_spot=%s",
+                    product_symbol,
+                    is_spot,
+                )
+                continue
+
             position["netQty"] = net_qty
 
             # Average entry price

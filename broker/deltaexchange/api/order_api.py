@@ -259,60 +259,40 @@ def get_trade_book(auth):
 
 def get_positions(auth):
     """
-    Fetch all open positions — both derivatives (margined) and spot (wallet).
+    Fetch all open derivative positions from GET /v2/positions/margined.
 
-    Derivatives come from GET /v2/positions/margined.
-    Spot holdings come from GET /v2/wallet/balances — non-INR assets with
-    a non-zero balance are synthesised into position-like dicts so they
-    appear in the OpenAlgo position book alongside derivative positions.
+    Delta wallet balances are account balances, not trade positions. Mixing
+    them into the position book creates synthetic symbols like REF_USD_INR
+    that then fail downstream symbol and quote lookups.
     """
     positions = []
+    fatal_errors = []
 
-    # 1. Derivative positions (perpetual futures, options)
+    # Derivative positions (perpetual futures, options)
     try:
         result = get_api_response("/v2/positions/margined", auth, method="GET")
         if result.get("success"):
             positions.extend(result.get("result", []))
         else:
             logger.warning(f"[DeltaExchange] get_positions/margined unexpected: {result}")
+            fatal_errors.append(result.get("error") or result)
     except Exception as e:
         logger.error(f"[DeltaExchange] Exception in get_positions/margined: {e}")
+        fatal_errors.append({"message": str(e)})
 
-    # 2. Spot holdings from wallet balances
-    try:
-        wallet_result = get_api_response("/v2/wallet/balances", auth, method="GET")
-        if wallet_result.get("success"):
-            for asset in wallet_result.get("result", []):
-                if not isinstance(asset, dict):
-                    continue
-                symbol = asset.get("asset_symbol", "") or asset.get("symbol", "")
-                # Skip INR (settlement currency) and zero-balance assets
-                if symbol in ("INR", "USD", "") or not symbol:
-                    continue
-                balance = float(asset.get("balance", 0) or 0)
-                blocked = float(asset.get("blocked_margin", 0) or 0)
-                size = balance - blocked  # available spot holding
-                if size <= 0:
-                    continue
-                # Synthesise a position-like dict matching /v2/positions/margined structure
-                spot_symbol = f"{symbol}_INR"
-                positions.append({
-                    "product_id": asset.get("asset_id", ""),
-                    "product_symbol": spot_symbol,
-                    "size": size,
-                    "entry_price": "0",  # Wallet doesn't track entry price
-                    "realized_pnl": "0",
-                    "unrealized_pnl": "0",
-                    "_is_spot": True,  # Internal flag for downstream mapping
-                })
-    except Exception as e:
-        logger.error(f"[DeltaExchange] Exception fetching spot wallet positions: {e}")
+    if fatal_errors:
+        message = fatal_errors[0].get("message") if isinstance(fatal_errors[0], dict) else str(fatal_errors[0])
+        return {
+            "status": "error",
+            "message": message or "Failed to fetch Delta positions",
+            "errors": fatal_errors,
+        }
 
     return positions
 
 
 def get_holdings(auth):
-    """Delta Exchange has no equity holdings concept; spot is shown in positions."""
+    """Delta Exchange has no separate holdings book exposed by OpenAlgo."""
     return []
 
 
@@ -324,9 +304,17 @@ def get_open_position(tradingsymbol, exchange, product, auth):
     br_symbol = get_br_symbol(tradingsymbol, exchange) or tradingsymbol
     positions = get_positions(auth)
 
+    if isinstance(positions, dict) and positions.get("status") == "error":
+        logger.error(
+            "[DeltaExchange] get_open_position failed for %s: %s",
+            tradingsymbol,
+            positions.get("message", "unknown error"),
+        )
+        return None
+
     if not isinstance(positions, list):
         logger.error(f"[DeltaExchange] Unexpected positions format for {tradingsymbol}")
-        return "0"
+        return None
 
     for pos in positions:
         if isinstance(pos, dict) and pos.get("product_symbol") == br_symbol:
