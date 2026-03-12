@@ -171,7 +171,10 @@ class DeltaWebSocketAdapter(BaseBrokerWebSocketAdapter):
                         "_ref_count": 1,     # reference count
                     }
 
-        if self.connected and self.ws_client:
+        # Always forward to DeltaWebSocket — its _queue_or_send() handles
+        # both the pre-connect case (buffers in _active_sub_msgs and replays
+        # on connect) and the already-connected case (sends immediately).
+        if self.ws_client:
             try:
                 self._ws_subscribe_channel(channel, br_symbol)
                 if companion:
@@ -181,8 +184,6 @@ class DeltaWebSocketAdapter(BaseBrokerWebSocketAdapter):
             except Exception as exc:
                 self.logger.error("subscribe error %s.%s: %s", symbol, exchange, exc)
                 return self._create_error_response("SUBSCRIPTION_ERROR", str(exc))
-        else:
-            self.logger.info("Buffered subscription for %s.%s (not yet connected)", symbol, exchange)
 
         return self._create_success_response(
             f"Subscription requested for {symbol}.{exchange}",
@@ -250,7 +251,11 @@ class DeltaWebSocketAdapter(BaseBrokerWebSocketAdapter):
             if not remaining:
                 should_disconnect = True
 
+<<<<<<< HEAD
         if self.connected and self.ws_client:
+=======
+        if self.ws_client and should_upstream_unsub:
+>>>>>>> origin/main
             try:
                 if should_upstream_unsub:
                     self._ws_unsubscribe_channel(channel, br_symbol)
@@ -591,8 +596,12 @@ class DeltaWebSocketAdapter(BaseBrokerWebSocketAdapter):
                 return val
             return cast(cached.get(key, default))
 
+        # LTP: prefer mark_price, fall back to close (last traded price) or spot_price.
+        # Spot instruments may not have mark_price in early ticker messages.
+        raw_ltp = msg.get("mark_price") or msg.get("spot_price")
+
         result = {
-            "ltp":           _cv("ltp",        msg.get("mark_price"),  _f),
+            "ltp":           _cv("ltp",        raw_ltp,                _f),
             "open":          _cv("open",        msg.get("open"),        _f),
             "high":          _cv("high",        msg.get("high"),        _f),
             "low":           _cv("low",         msg.get("low"),         _f),
@@ -620,7 +629,8 @@ class DeltaWebSocketAdapter(BaseBrokerWebSocketAdapter):
         """
         Map l2_orderbook message to OpenAlgo depth format.
 
-        buy/sell: [{"price": str, "size": int, "depth": int}, ...]
+        Delta l2_orderbook levels:
+          buy/sell: [{"limit_price": str, "size": int, "depth": str}, ...]
         """
         def _f(v, d=0.0):
             try: return float(v) if v is not None else d
@@ -629,7 +639,7 @@ class DeltaWebSocketAdapter(BaseBrokerWebSocketAdapter):
         def _parse_levels(side_list, n=5):
             levels = []
             for lvl in (side_list or [])[:n]:
-                levels.append({"price": _f(lvl.get("price")), "quantity": int(lvl.get("size", 0))})
+                levels.append({"price": _f(lvl.get("limit_price")), "quantity": int(lvl.get("size", 0))})
             while len(levels) < n:
                 levels.append({"price": 0.0, "quantity": 0})
             return levels
@@ -638,8 +648,10 @@ class DeltaWebSocketAdapter(BaseBrokerWebSocketAdapter):
         asks = _parse_levels(msg.get("sell", []))
 
         result = {
-            "bids": bids,
-            "asks": asks,
+            "depth": {
+                "buy":  bids,
+                "sell": asks,
+            },
             "totalbuyqty":  sum(lvl["quantity"] for lvl in bids),
             "totalsellqty": sum(lvl["quantity"] for lvl in asks),
             "ltp": 0,
