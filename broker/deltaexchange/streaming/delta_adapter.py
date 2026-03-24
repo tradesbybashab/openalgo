@@ -251,11 +251,7 @@ class DeltaWebSocketAdapter(BaseBrokerWebSocketAdapter):
             if not remaining:
                 should_disconnect = True
 
-<<<<<<< HEAD
         if self.connected and self.ws_client:
-=======
-        if self.ws_client and should_upstream_unsub:
->>>>>>> origin/main
             try:
                 if should_upstream_unsub:
                     self._ws_unsubscribe_channel(channel, br_symbol)
